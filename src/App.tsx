@@ -6,6 +6,7 @@ import Inspector from './components/Inspector';
 import ImportDialog from './components/ImportDialog';
 import { CreateThemeDialog, MergeThemeDialog, SplitThemeDialog } from './components/ThemeDialogs';
 import { useCodingStore } from './store/coding-store';
+import { segmentStatus } from './utils/adjudication';
 
 export default function App() {
   const store = useCodingStore();
@@ -19,6 +20,12 @@ export default function App() {
   const activeSegments = createMemo(() => store.state.segments
     .filter((segment) => segment.transcriptId === store.state.activeTranscriptId)
     .sort((a, b) => a.order - b.order));
+
+  const pendingCount = createMemo(() => store.state.segments.filter((segment) => {
+    const status = segmentStatus(segment);
+    return status === 'pending' || status === 'deferred';
+  }).length);
+  const resolvedCount = createMemo(() => store.state.segments.filter((segment) => segmentStatus(segment) === 'resolved').length);
 
   const moveSegment = (delta: number) => {
     const segments = activeSegments();
@@ -108,8 +115,8 @@ export default function App() {
         <div class="project-metrics">
           <div><strong>{store.state.segments.length}</strong><span>转写片段</span></div>
           <div><strong>{store.state.themes.length}</strong><span>层级主题</span></div>
-          <div><strong>{store.state.segments.filter((segment) => segment.assignments.A.join('|') !== segment.assignments.B.join('|')).length}</strong><span>编码分歧</span></div>
-          <div><strong>{store.state.revision}</strong><span>本地修订</span></div>
+          <div><strong>{pendingCount()}</strong><span>待裁决分歧</span></div>
+          <div><strong>{resolvedCount()}</strong><span>已裁决片段</span></div>
         </div>
       </section>
 
@@ -122,15 +129,16 @@ export default function App() {
       <section class="lower-grid">
         <Paper class="panel codebook-panel" elevation={0}>
           <div class="panel-heading"><div><span class="eyebrow">CODEBOOK HEALTH</span><h3>编码册质量检查</h3></div><Chip label="实时" size="small" /></div>
-          <div class="health-grid">
+          <div class="health-grid four">
             <div class="health-item"><strong>{store.state.segments.filter((segment) => !segment.assignments.A.length && !segment.assignments.B.length).length}</strong><span>未编码片段</span><small>可批量选择后重新编码</small></div>
             <div class="health-item"><strong>{store.state.themes.filter((theme) => !theme.definition).length}</strong><span>缺少定义的主题</span><small>定义会帮助后续编码保持一致</small></div>
-            <div class="health-item"><strong>{store.state.segments.filter((segment) => segment.assignments.A.join('|') !== segment.assignments.B.join('|')).length}</strong><span>双编码分歧</span><small>使用双人比较逐条处理</small></div>
+            <div class="health-item"><strong class="amber">{pendingCount()}</strong><span>待裁决分歧</span><small>含保留分歧、约定再讨论的片段</small></div>
+            <div class="health-item"><strong>{resolvedCount()}</strong><span>已裁决片段</span><small>最终主题已计入主题树与导出</small></div>
           </div>
         </Paper>
         <Paper class="panel export-panel" elevation={0}>
           <div class="panel-heading"><div><span class="eyebrow">EXPORT & BACKUP</span><h3>研究数据出口</h3></div></div>
-          <p>导出包含完整主题路径、双编码者判断、备忘录、主题示例和审计记录。CSV 适合表格复核，JSON 可完整回档。</p>
+          <p>CSV 按片段导出 A/B 两份判断、裁决状态、最终主题、裁决人、裁决依据和作废历史；JSON 可完整回档，含全部裁决备查记录。</p>
           <div class="button-row"><Button variant="contained" onClick={() => store.downloadExport('json')}>下载 JSON 完整包</Button><Button variant="outlined" onClick={() => store.downloadExport('csv')}>下载 CSV 编码表</Button></div>
         </Paper>
       </section>

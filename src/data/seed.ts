@@ -1,6 +1,7 @@
 import type { CodingState } from '../types';
 
 export const seedState = (): CodingState => {
+  const now = new Date().toISOString();
   const themes = [
     { id: 't-education', name: '1. 教育经历', parentId: null, color: '#267365', definition: '正式或非正式的学习经历、学校与教师记忆。', memo: '注意区分入学选择和家庭影响。', examples: ['小学时老师让我第一次接触地图'] },
     { id: 't-school-choice', name: '1.1 学校选择', parentId: 't-education', color: '#4d9b8f', definition: '关于进入哪所学校、为何选择及其决策者的陈述。', memo: '家长和个人的理由要分别编码。', examples: [] },
@@ -25,13 +26,14 @@ export const seedState = (): CodingState => {
   ];
   return {
     revision: 1,
-    updatedAt: new Date().toISOString(),
+    updatedAt: now,
     activeTranscriptId: 'tr-001',
     activeSegmentId: 's-001',
     activeThemeId: 't-school-choice',
     coderA: '林研究员',
     coderB: '赵研究员',
-    transcripts: [{ id: 'tr-001', title: '李岚访谈：教育与职业选择', participant: '李岚', importedAt: new Date().toISOString(), sourceName: '示例转写' }],
+    adjudicator: '周副教授',
+    transcripts: [{ id: 'tr-001', title: '李岚访谈：教育与职业选择', participant: '李岚', importedAt: now, sourceName: '示例转写' }],
     segments: lines.map((line, index) => ({
       id: `s-${String(index + 1).padStart(3, '0')}`,
       transcriptId: 'tr-001',
@@ -43,9 +45,54 @@ export const seedState = (): CodingState => {
         A: index === 1 ? ['t-school-choice'] : index === 5 ? ['t-teacher'] : index === 7 ? ['t-teacher', 't-family'] : index === 8 ? ['t-migration'] : index === 9 ? ['t-family'] : [],
         B: index === 1 ? ['t-school-choice', 't-family'] : index === 5 ? ['t-teacher'] : index === 7 ? ['t-teacher'] : index === 8 ? ['t-migration', 't-work'] : []
       },
-      note: ''
+      note: '',
+      // 示例覆盖三种裁决状态：已裁决 / 保留分歧 / 待裁决（index 8 另带一条因判断变更而作废的历史记录）
+      adjudication: index === 1 ? {
+        current: {
+          at: now,
+          adjudicator: '周副教授',
+          status: 'resolved' as const,
+          finalThemeIds: ['t-school-choice'],
+          basisA: ['t-school-choice'],
+          basisB: ['t-school-choice', 't-family'],
+          note: '家庭角色只出现在选择理由中，主线仍是择校决策。'
+        },
+        history: []
+      } : index === 7 ? {
+        current: {
+          at: now,
+          adjudicator: '周副教授',
+          status: 'deferred' as const,
+          finalThemeIds: [],
+          basisA: ['t-teacher', 't-family'],
+          basisB: ['t-teacher'],
+          note: '下周编码会再讨论家庭支持是否单独成码。'
+        },
+        history: []
+      } : index === 8 ? {
+        current: {
+          at: now,
+          adjudicator: '周副教授',
+          status: 'resolved' as const,
+          finalThemeIds: ['t-migration'],
+          basisA: ['t-migration'],
+          basisB: ['t-migration', 't-work'],
+          note: '“工作与迁徙”作为上位类不重复计数。'
+        },
+        history: [{
+          at: now,
+          adjudicator: '周副教授',
+          status: 'resolved' as const,
+          finalThemeIds: ['t-work'],
+          basisA: ['t-work'],
+          basisB: ['t-migration', 't-work'],
+          note: '初次裁决后 A 修正为迁徙决定，裁决自动退回待裁决。',
+          archivedAt: now,
+          supersededReason: 'judgment-changed' as const
+        }]
+      } : { current: null, history: [] }
     })),
     themes,
-    audit: [{ id: 'a-seed', at: new Date().toISOString(), action: '初始化', detail: '载入演示访谈与两个编码者的判断' }]
+    audit: [{ id: 'a-seed', at: now, action: '初始化', detail: '载入演示访谈与两个编码者的判断' }]
   };
 };

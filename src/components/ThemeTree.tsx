@@ -1,5 +1,6 @@
 import { For, Show, createMemo, createSignal } from 'solid-js';
 import { Button, Chip, Paper, Typography } from '@suid/material';
+import { finalThemesOf, segmentStatus } from '../utils/adjudication';
 import type { useCodingStore } from '../store/coding-store';
 
 type Store = ReturnType<typeof useCodingStore>;
@@ -9,9 +10,16 @@ export default function ThemeTree(props: { store: Store; onCreate: (parentId?: s
   const themes = createMemo(() => props.store.orderedThemes().filter((theme) => theme.name.toLowerCase().includes(query().toLowerCase())));
   const activeSegment = () => props.store.state.segments.find((segment) => segment.id === props.store.state.activeSegmentId);
 
+  // 主题计数只统计已确定的最终判断（一致片段 + 已裁决最终主题）；待裁决/保留分歧不计入。
   const countFor = (themeId: string) => props.store.state.segments.reduce((count, segment) => (
-    count + (segment.assignments.A.includes(themeId) || segment.assignments.B.includes(themeId) ? 1 : 0)
+    count + (finalThemesOf(segment).includes(themeId) ? 1 : 0)
   ), 0);
+  // 该主题下仍未谈拢的片段数（任何一方使用了该主题且片段处于待裁决/保留分歧）
+  const pendingFor = (themeId: string) => props.store.state.segments.reduce((count, segment) => {
+    const status = segmentStatus(segment);
+    return count + (((status === 'pending' || status === 'deferred') &&
+      (segment.assignments.A.includes(themeId) || segment.assignments.B.includes(themeId))) ? 1 : 0);
+  }, 0);
 
   return (
     <Paper class="panel tree-panel" elevation={0}>
@@ -23,7 +31,7 @@ export default function ThemeTree(props: { store: Store; onCreate: (parentId?: s
         <Button size="small" variant="contained" onClick={() => props.onCreate()}>＋ 一级主题</Button>
       </div>
       <input class="native-input full" placeholder="筛选主题" value={query()} onInput={(event) => setQuery(event.currentTarget.value)} />
-      <div class="theme-help">勾选 A / B 可将当前片段分配给该主题；不同判断会以“分歧”提示。</div>
+      <div class="theme-help">勾选 A / B 可将当前片段分配给该主题；计数为最终判断数，琥珀点表示该主题仍有未裁决分歧。</div>
       <div class="theme-tree">
         <For each={themes()}>{(theme) => {
           const depth = () => {
@@ -44,6 +52,7 @@ export default function ThemeTree(props: { store: Store; onCreate: (parentId?: s
               <button class="theme-main" style={{ '--depth': depth(), '--theme-color': theme.color }} onClick={() => props.store.selectTheme(theme.id)}>
                 <span class="theme-color" />
                 <span class="theme-name">{theme.name}</span>
+                <Show when={pendingFor(theme.id) > 0}><span class="theme-pending" title={`${pendingFor(theme.id)} 个片段尚未裁决`}>{pendingFor(theme.id)}</span></Show>
                 <span class="theme-count">{countFor(theme.id)}</span>
               </button>
               <div class="theme-actions">

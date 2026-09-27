@@ -2,15 +2,39 @@ import { createEffect, createSignal } from 'solid-js';
 import { createStore, reconcile, unwrap } from 'solid-js/store';
 import { seedState } from '../data/seed';
 import type { CoderId, CodingState, PersistedEnvelope, Segment, Theme } from '../types';
+import { adjudicationIsStale, emptyAdjudication, sameAssignments } from '../utils/adjudication';
 import { readEnvelope, writeEnvelope } from '../utils/db';
 
 const STORAGE_KEY = 'sologsb-1019-state-v1';
 const TAB_ID = crypto.randomUUID();
 
+/** 兼容旧数据：补齐裁决人、裁决字段，并把依据已对不上的旧裁决退回待裁决（原记录留存）。 */
+const migrateState = (state: CodingState): CodingState => {
+  const next = state as CodingState;
+  if (typeof next.adjudicator !== 'string') next.adjudicator = '首席研究员';
+  if (!Array.isArray(next.segments)) return next;
+  next.segments.forEach((segment) => {
+    if (!segment.adjudication) {
+      segment.adjudication = emptyAdjudication();
+      return;
+    }
+    if (!Array.isArray(segment.adjudication.history)) segment.adjudication.history = [];
+    if (segment.adjudication.current && adjudicationIsStale(segment)) {
+      segment.adjudication.history.unshift({
+        ...segment.adjudication.current,
+        archivedAt: next.updatedAt ?? new Date().toISOString(),
+        supersededReason: 'judgment-changed'
+      });
+      segment.adjudication.current = null;
+    }
+  });
+  return next;
+};
+
 const loadLocal = (): CodingState => {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
-    if (raw) return JSON.parse(raw) as CodingState;
+    if (raw) return migrateState(JSON.parse(raw) as CodingState);
   } catch {
     localStorage.removeItem(STORAGE_KEY);
   }
@@ -19,6 +43,21 @@ const loadLocal = (): CodingState => {
 
 const cloneState = (state: CodingState): CodingState => structuredClone(unwrap(state));
 
+/** 任何写操作之后统一校验：A/B 判断已变化的裁决一律作废，回到待裁决，原记录转入 history 备查。 */
+const invalidateStaleAdjudications = (draft: CodingState) => {
+  draft.segments.forEach((segment) => {
+    const adjudication = segment.adjudication;
+    if (adjudication?.current && adjudicationIsStale(segment)) {
+      adjudication.history.unshift({
+        ...adjudication.current,
+        archivedAt: draft.updatedAt,
+        supersededReason: 'judgment-changed'
+      });
+      adjudication.current = null;
+    }
+  });
+};
+
 const [state, setState] = createStore<CodingState>(loadLocal());
 const [undoStack, setUndoStack] = createSignal<CodingState[]>([]);
 const [redoStack, setRedoStack] = createSignal<CodingState[]>([]);
@@ -26,7 +65,6 @@ const [remoteEnvelope, setRemoteEnvelope] = createSignal<PersistedEnvelope | nul
 const [storageReady, setStorageReady] = createSignal(false);
 const [lastSavedAt, setLastSavedAt] = createSignal<Date | null>(null);
 let channel: BroadcastChannel | null = null;
-let hydrating = false;
 let saveTimer: number | undefined;
 
 const persist = (snapshot: CodingState) => {
@@ -55,9 +93,10 @@ const transaction = (action: string, detail: string, mutator: (draft: CodingStat
   setUndoStack((items) => [...items.slice(-49), cloneState(state)]);
   setRedoStack([]);
   const next = cloneState(state);
-  mutator(next);
   next.revision = state.revision + 1;
   next.updatedAt = new Date().toISOString();
+  mutator(next);
+  invalidateStaleAdjudications(next);
   next.audit.unshift({ id: crypto.randomUUID(), at: next.updatedAt, action, detail });
   next.audit = next.audit.slice(0, 250);
   setState(reconcile(next, { merge: false }));
@@ -138,6 +177,7 @@ export function useCodingStore() {
     if (coder === 'A') setState('coderA', name);
     else setState('coderB', name);
   };
+  const setAdjudicator = (name: string) => setState('adjudicator', name);
 
   const toggleAssignment = (segmentId: string, coder: CoderId, themeId: string, enabled: boolean) => {
     transaction('调整编码', `${coder === 'A' ? state.coderA : state.coderB} ${enabled ? '添加' : '移除'}主题`, (draft) => {
@@ -245,7 +285,8 @@ export function useCodingStore() {
         time: row.time,
         text: row.text,
         assignments: { A: [], B: [] },
-        note: ''
+        note: '',
+        adjudication: emptyAdjudication()
       }));
       draft.segments.push(...segments);
       draft.activeTranscriptId = transcriptId;
@@ -262,29 +303,92 @@ export function useCodingStore() {
     });
   };
 
+  /**
+   * 对分歧片段作出裁决。
+   * - resolved：以 finalThemeIds 作为最终判断（立即进入主题树计数与导出）；
+   * - deferred：保留分歧，继续出现在待裁决清单。
+   * 裁决冻结当时两份 A/B 判断；之后任一判断被修改，由 transaction 统一作废此裁决。
+   */
+  const adjudicate = (segmentId: string, status: 'resolved' | 'deferred', finalThemeIds: string[], note: string) => {
+    const segment = state.segments.find((item) => item.id === segmentId);
+    if (!segment || sameAssignments(segment.assignments.A, segment.assignments.B)) return;
+    const themeName = (id: string) => state.themes.find((theme) => theme.id === id)?.name ?? '未知主题';
+    const label = status === 'resolved'
+      ? `最终采用：${finalThemeIds.length ? finalThemeIds.map(themeName).join('、') : '未编码'}`
+      : '保留分歧，继续讨论';
+    transaction('分歧裁决', `${segment.time} · ${segment.speaker}｜${label}`, (draft) => {
+      const target = draft.segments.find((item) => item.id === segmentId)!;
+      target.adjudication ??= emptyAdjudication();
+      if (target.adjudication.current) {
+        target.adjudication.history.unshift({
+          ...target.adjudication.current,
+          archivedAt: draft.updatedAt,
+          supersededReason: 're-adjudicated'
+        });
+      }
+      target.adjudication.current = {
+        at: draft.updatedAt,
+        adjudicator: draft.adjudicator.trim() || '首席研究员',
+        status,
+        finalThemeIds: status === 'resolved' ? [...finalThemeIds] : [],
+        basisA: [...target.assignments.A],
+        basisB: [...target.assignments.B],
+        note: note.trim()
+      };
+    });
+  };
+
   const exportCoding = (format: 'json' | 'csv') => {
-    const segmentMap = new Map(state.segments.map((segment) => [segment.id, segment]));
     const themeMap = new Map(state.themes.map((theme) => [theme.id, theme]));
     if (format === 'json') return JSON.stringify({ exportedAt: new Date().toISOString(), ...cloneState(state) }, null, 2);
     const escape = (value: string) => `"${value.replaceAll('"', '""')}"`;
-    const rows = [['片段编号', '时间', '发言人', '原文', '编码者', '主题路径', '备忘录'].map(escape).join(',')];
+    const themePath = (id: string) => {
+      const names: string[] = [];
+      let current = themeMap.get(id);
+      while (current) {
+        names.unshift(current.name);
+        current = current.parentId ? themeMap.get(current.parentId) : undefined;
+      }
+      return names.join(' / ');
+    };
+    const pathsOf = (ids: string[]) => (ids.length ? ids.map(themePath).join(' | ') : '未编码');
+    const rows = [[
+      '片段编号', '时间', '发言人', '原文',
+      `编码者A(${state.coderA})判断主题`,
+      `编码者B(${state.coderB})判断主题`,
+      '裁决状态', '最终主题', '裁决人', '裁决时间',
+      '裁决依据A', '裁决依据B', '历史裁决', '备忘录'
+    ].map(escape).join(',')];
     state.segments.forEach((segment) => {
-      (['A', 'B'] as CoderId[]).forEach((coder) => {
-        const name = coder === 'A' ? state.coderA : state.coderB;
-        const themeIds = segment.assignments[coder];
-        const paths = themeIds.length ? themeIds.map((id) => {
-          const names: string[] = [];
-          let current = themeMap.get(id);
-          while (current) {
-            names.unshift(current.name);
-            current = current.parentId ? themeMap.get(current.parentId) : undefined;
-          }
-          return names.join(' / ');
-        }) : ['未编码'];
-        rows.push([segment.id, segment.time, segment.speaker, segment.text, name, paths.join(' | '), segmentMap.get(segment.id)?.note ?? ''].map(escape).join(','));
-      });
+      const adjudication = segment.adjudication?.current ?? null;
+      const statusLabel = sameAssignments(segment.assignments.A, segment.assignments.B)
+        ? '一致'
+        : !adjudication
+          ? '待裁决'
+          : adjudication.status === 'resolved'
+            ? '已裁决'
+            : '保留分歧';
+      const historyNote = (segment.adjudication?.history ?? [])
+        .map((item) => `${new Date(item.archivedAt).toLocaleString('zh-CN')} 作废：${item.supersededReason === 'judgment-changed' ? '判断已变更' : '重新裁决'}（${item.status === 'resolved' ? item.finalThemeIds.map(themePath).join(' | ') || '未编码' : '保留分歧'}）`)
+        .join(' ⏎ ');
+      rows.push([
+        segment.id,
+        segment.time,
+        segment.speaker,
+        segment.text,
+        pathsOf(segment.assignments.A),
+        pathsOf(segment.assignments.B),
+        statusLabel,
+        adjudication?.status === 'resolved' ? pathsOf(adjudication.finalThemeIds) : '',
+        adjudication?.adjudicator ?? '',
+        adjudication ? new Date(adjudication.at).toLocaleString('zh-CN') : '',
+        adjudication ? pathsOf(adjudication.basisA) : '',
+        adjudication ? pathsOf(adjudication.basisB) : '',
+        historyNote,
+        segment.note
+      ].map(escape).join(','));
     });
-    return `\uFEFF${rows.join('\n')}`;
+    return `﻿${rows.join('\n')}`;
   };
 
   const downloadExport = (format: 'json' | 'csv') => {
@@ -308,7 +412,7 @@ export function useCodingStore() {
     if (!remote) return;
     setUndoStack((items) => [...items, cloneState(state)]);
     setRedoStack([]);
-    setState(reconcile(remote.state, { merge: false }));
+    setState(reconcile(migrateState(structuredClone(remote.state)), { merge: false }));
     setRemoteEnvelope(null);
   };
 
@@ -325,6 +429,7 @@ export function useCodingStore() {
     selectTranscript,
     selectTheme,
     setCoder,
+    setAdjudicator,
     toggleAssignment,
     batchAssign,
     addTheme,
@@ -335,6 +440,7 @@ export function useCodingStore() {
     updateSegment,
     importTranscript,
     addExample,
+    adjudicate,
     exportCoding,
     downloadExport,
     orderedThemes,
