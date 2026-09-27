@@ -1,6 +1,8 @@
 import { For, Show, createMemo, createSignal } from 'solid-js';
 import { Button, Checkbox, Chip, Divider, Paper, Typography } from '@suid/material';
 import type { useCodingStore } from '../store/coding-store';
+import { effectiveThemeIdsForSegment } from '../utils/adjudication';
+import { AdjudicationBadge } from './AdjudicationWorkbench';
 
 type Store = ReturnType<typeof useCodingStore>;
 
@@ -67,7 +69,8 @@ export default function TranscriptPanel(props: { store: Store }) {
       <div class="segment-list">
         <For each={segments()}>{(segment, index) => {
           const isActive = () => props.store.state.activeSegmentId === segment.id;
-          const themeNames = () => [...new Set([...segment.assignments.A, ...segment.assignments.B])]
+          // 已裁决片段只显示最终主题，其余显示两位编码者提过的主题并集
+          const themeNames = () => [...new Set(effectiveThemeIdsForSegment(props.store.state, segment))]
             .map((id) => props.store.state.themes.find((theme) => theme.id === id)?.name ?? '未知主题');
           return (
             <article
@@ -87,9 +90,7 @@ export default function TranscriptPanel(props: { store: Store }) {
                 <span class="segment-index">#{index() + 1}</span>
                 <span class="segment-time">{segment.time}</span>
                 <strong>{segment.speaker}</strong>
-                <Show when={segment.assignments.A.join('|') !== segment.assignments.B.join('|')}>
-                  <span class="conflict-dot" title="两位编码者判断不一致">分歧</span>
-                </Show>
+                <AdjudicationBadge store={props.store} segment={segment} />
               </div>
               <p>{segment.text}</p>
               <Show when={themeNames().length}>

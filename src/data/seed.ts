@@ -46,6 +46,32 @@ export const seedState = (): CodingState => {
       note: ''
     })),
     themes,
+    adjudications: [
+      {
+        id: 'adj-seed-1',
+        segmentId: 's-008',
+        decidedAt: new Date().toISOString(),
+        basisA: ['t-teacher', 't-family'],
+        basisB: ['t-teacher'],
+        outcome: 'resolved',
+        finalThemeId: 't-teacher',
+        note: '家庭劝说只在背景中出现，主轴仍是教师影响，最终按教师影响编码。',
+        supersededAt: null,
+        supersedeReason: ''
+      },
+      {
+        id: 'adj-seed-2',
+        segmentId: 's-002',
+        decidedAt: new Date().toISOString(),
+        basisA: ['t-school-choice'],
+        basisB: ['t-school-choice', 't-family'],
+        outcome: 'deferred',
+        finalThemeId: null,
+        note: '母亲主导转学会不会同时构成家庭支持，下次编码会议再定。',
+        supersededAt: null,
+        supersedeReason: ''
+      }
+    ],
     audit: [{ id: 'a-seed', at: new Date().toISOString(), action: '初始化', detail: '载入演示访谈与两个编码者的判断' }]
   };
 };

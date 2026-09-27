@@ -2,6 +2,8 @@ import { For, Show, createEffect, createMemo, createSignal } from 'solid-js';
 import { Button, Chip, Divider, Paper, Typography } from '@suid/material';
 import type { Theme } from '../types';
 import type { useCodingStore } from '../store/coding-store';
+import { effectiveThemeIdsForSegment } from '../utils/adjudication';
+import AdjudicationWorkbench, { AdjudicationStatusBar } from './AdjudicationWorkbench';
 
 type Store = ReturnType<typeof useCodingStore>;
 
@@ -10,14 +12,15 @@ export default function Inspector(props: { store: Store }) {
   const [memo, setMemo] = createSignal('');
   const [example, setExample] = createSignal('');
   const [segmentNote, setSegmentNote] = createSignal('');
-  const [section, setSection] = createSignal<'theme' | 'compare' | 'audit'>('theme');
+  const [section, setSection] = createSignal<'theme' | 'adjudicate' | 'compare' | 'audit'>('adjudicate');
 
   const theme = createMemo(() => props.store.state.themes.find((item) => item.id === props.store.state.activeThemeId));
   const segment = createMemo(() => props.store.state.segments.find((item) => item.id === props.store.state.activeSegmentId));
   const citations = createMemo(() => {
     const current = theme();
     if (!current) return [];
-    return props.store.state.segments.filter((item) => item.assignments.A.includes(current.id) || item.assignments.B.includes(current.id));
+    // 引用按裁决后的生效主题：已裁决片段只看最终主题
+    return props.store.state.segments.filter((item) => effectiveThemeIdsForSegment(props.store.state, item).includes(current.id));
   });
 
   createEffect(() => {
@@ -49,12 +52,18 @@ export default function Inspector(props: { store: Store }) {
           <Typography variant="h6">主题与判断</Typography>
         </div>
       </div>
-      <div class="inspector-tabs">
+      <div class="inspector-tabs four">
+        <button classList={{ active: section() === 'adjudicate' }} onClick={() => setSection('adjudicate')}>分歧裁决</button>
         <button classList={{ active: section() === 'theme' }} onClick={() => setSection('theme')}>主题记事</button>
         <button classList={{ active: section() === 'compare' }} onClick={() => setSection('compare')}>双人比较</button>
         <button classList={{ active: section() === 'audit' }} onClick={() => setSection('audit')}>操作记录</button>
       </div>
       <Divider />
+      <div class="inspector-body">
+
+      <Show when={section() === 'adjudicate'}>
+        <AdjudicationWorkbench store={props.store} onEditCompare={() => setSection('compare')} />
+      </Show>
 
       <Show when={section() === 'theme'}>
         <Show when={theme()} fallback={<div class="empty-state">从中间主题树选择一个主题，添加定义、备忘录和示例。</div>}>
@@ -119,9 +128,10 @@ export default function Inspector(props: { store: Store }) {
                 </select>
               </div>
             </div>
-            <Show when={activeSegment().assignments.A.join('|') !== activeSegment().assignments.B.join('|')} fallback={<div class="agreement">✓ 当前判断完全一致</div>}>
-              <div class="disagreement">⚠ 当前判断存在分歧，导出结果仍会同时保留两位编码者记录。</div>
+            <Show when={activeSegment().assignments.A.join('|') === activeSegment().assignments.B.join('|')} fallback={<div class="disagreement">⚠ 当前判断存在分歧，导出结果仍会同时保留两位编码者记录；请到「分歧裁决」定下最终主题或保留分歧。</div>}>
+              <div class="agreement">✓ 当前判断完全一致</div>
             </Show>
+            <AdjudicationStatusBar store={props.store} segmentId={activeSegment().id} onGoAdjudicate={() => setSection('adjudicate')} />
             <label class="field-label">片段编码备忘
               <textarea class="native-textarea" value={segmentNote()} onInput={(event) => setSegmentNote(event.currentTarget.value)} onBlur={saveNote} placeholder="记录此片段的分歧处理或引文提示" />
             </label>
@@ -149,6 +159,7 @@ export default function Inspector(props: { store: Store }) {
           )}</For>
         </div>
       </Show>
+      </div>
     </Paper>
   );
 }
